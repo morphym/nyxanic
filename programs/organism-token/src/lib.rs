@@ -1,5 +1,12 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, MintTo, Burn, Token, TokenAccount, Transfer};
+use anchor_lang::solana_program::program::get_return_data;
+use organism_brain::{
+    self,
+    cpi::accounts::EvaluateTransaction as BrainEvaluate,
+    program::OrganismBrain,
+    DirectiveResponse,
+};
 
 declare_id!("4x2VEu8TGdiJdFqBEdnXAG2EvZPn5m27AoDThbtmLiv5");
 
@@ -342,6 +349,90 @@ pub mod organism_token {
         Ok(())
     }
 
+    /// §4.1 — Heartbeat. Body invokes brain via CPI, reads the returned
+    /// Directive, stores it in body_state. This replaces apply_directive
+    /// for production use — no admin authority required.
+    ///
+    /// On any CPI/parse failure, applies the default (Execute) directive
+    /// and emits a BrainFailure event (defensive fallback, §4.4).
+    pub fn heartbeat(
+        ctx: Context<Heartbeat>,
+        current_price: u64,
+        direction_hint: i8,
+        current_slot: u64,
+    ) -> Result<()> {
+        let cpi_ctx = CpiContext::new(
+            ctx.accounts.brain_program.to_account_info(),
+            BrainEvaluate {
+                severity: ctx.accounts.brain_severity.to_account_info(),
+                ladder: ctx.accounts.brain_ladder.to_account_info(),
+                intensity: ctx.accounts.brain_intensity.to_account_info(),
+                params: ctx.accounts.brain_params.to_account_info(),
+            },
+        );
+
+        let cpi_result = organism_brain::cpi::evaluate_transaction(
+            cpi_ctx,
+            current_price,
+            direction_hint,
+            current_slot,
+        );
+
+        let body = &mut ctx.accounts.body_state;
+
+        let directive = match cpi_result {
+            Ok(()) => {
+                match get_return_data() {
+                    Some((program_id, data)) if program_id == ctx.accounts.brain_program.key() => {
+                        match DirectiveResponse::try_from_slice(&data) {
+                            Ok(resp) => Directive {
+                                execution_mode: match resp.execution_mode {
+                                    0 => ExecutionMode::Execute,
+                                    1 => ExecutionMode::Throttle,
+                                    2 => ExecutionMode::Route,
+                                    _ => ExecutionMode::Halt,
+                                },
+                                fee_adjustment: resp.fee_adjustment,
+                                spread_adjustment: resp.spread_adjustment,
+                                throttle_factor: resp.throttle_factor,
+                                mint_burn_delta: resp.mint_burn_delta,
+                                collateral_ratio_target: resp.collateral_ratio_target,
+                            },
+                            Err(_) => {
+                                emit!(BrainFailure { reason: 1 }); // parse error
+                                Directive::default()
+                            }
+                        }
+                    }
+                    _ => {
+                        emit!(BrainFailure { reason: 2 }); // no return data
+                        Directive::default()
+                    }
+                }
+            }
+            Err(_) => {
+                emit!(BrainFailure { reason: 3 }); // CPI failure
+                Directive::default()
+            }
+        };
+
+        body.current_directive = directive;
+        body.last_price = current_price;
+        body.last_slot = current_slot;
+        body.throttle_window_start = current_slot;
+        body.throttle_window_remaining = throttle_capacity(&body.current_directive);
+
+        emit!(HeartbeatEvent {
+            mode: body.current_directive.execution_mode as u8,
+            fee_adjustment: body.current_directive.fee_adjustment,
+            throttle_factor: body.current_directive.throttle_factor,
+            slot: current_slot,
+            price: current_price,
+        });
+
+        Ok(())
+    }
+
     /// Register a pool address into the registry (admin only).
     /// Used at rung ℓ5 (Liquidity Routing).
     pub fn register_pool(ctx: Context<RegisterPool>, pool: Pubkey) -> Result<()> {
@@ -560,6 +651,26 @@ pub struct SwapAgainstReserve<'info> {
 }
 
 #[derive(Accounts)]
+pub struct Heartbeat<'info> {
+    #[account(mut, seeds = [BODY_STATE_SEED], bump)]
+    pub body_state: Account<'info, BodyState>,
+
+    /// CHECK: Brain's severity state — validated by brain on its end via PDA seeds
+    #[account(mut)]
+    pub brain_severity: AccountInfo<'info>,
+    /// CHECK: Brain's ladder state — validated by brain
+    #[account(mut)]
+    pub brain_ladder: AccountInfo<'info>,
+    /// CHECK: Brain's intensity state — validated by brain
+    #[account(mut)]
+    pub brain_intensity: AccountInfo<'info>,
+    /// CHECK: Brain's parameter account — validated by brain
+    pub brain_params: AccountInfo<'info>,
+
+    pub brain_program: Program<'info, OrganismBrain>,
+}
+
+#[derive(Accounts)]
 pub struct RegisterPool<'info> {
     #[account(mut, seeds = [POOL_REGISTRY_SEED], bump)]
     pub pool_registry: Account<'info, PoolRegistry>,
@@ -578,6 +689,16 @@ pub struct BurnEvent { pub burned: u64, pub fee: u64 }
 pub struct TransferEvent { pub amount: u64, pub fee: u64 }
 #[event]
 pub struct SwapEvent { pub in_amount: u64, pub out_amount: u64, pub extracted: u64 }
+#[event]
+pub struct HeartbeatEvent {
+    pub mode: u8,
+    pub fee_adjustment: i64,
+    pub throttle_factor: u16,
+    pub slot: u64,
+    pub price: u64,
+}
+#[event]
+pub struct BrainFailure { pub reason: u8 }
 
 // ---------------------------------------------------------------------------
 // Errors
