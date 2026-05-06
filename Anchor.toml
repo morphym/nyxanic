@@ -6,14 +6,22 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-organism = "AYhwowXBkhewU5iMYBXQjAxTJ1dkWifV6sRr7Acm7tch"
+organism_brain = "7j1odNDL4rvPk7KyPf2rk2VNc4RjFVXjG9YHqCgHP5VR"
+organism_token = "4x2VEu8TGdiJdFqBEdnXAG2EvZPn5m27AoDThbtmLiv5"
+
+[programs.devnet]
+organism_brain = "7j1odNDL4rvPk7KyPf2rk2VNc4RjFVXjG9YHqCgHP5VR"
+organism_token = "4x2VEu8TGdiJdFqBEdnXAG2EvZPn5m27AoDThbtmLiv5"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 \"tests/**/*.ts\""
+cu = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/cu_measure.ts"
+body = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/body_variables.ts"
+birth = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/birth.ts"
