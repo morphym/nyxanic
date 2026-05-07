@@ -465,6 +465,106 @@ pub mod organism_token {
         Ok(())
     }
 
+    /// Trustless heartbeat. Derives the observed price from internal state
+    /// (collateral_vault.amount / mint.supply, scaled to PRICE_SCALE) instead
+    /// of trusting a caller-supplied price. CPIs to brain with the derived
+    /// price + automatic direction hint, stores returned directive.
+    ///
+    /// This is the production path. The plain `heartbeat()` instruction
+    /// (caller-supplied price) is kept for testing and for use cases where an
+    /// external oracle is preferred.
+    pub fn heartbeat_observed(ctx: Context<HeartbeatObserved>, current_slot: u64) -> Result<()> {
+        let supply = ctx.accounts.mint.supply;
+        let vault_amt = ctx.accounts.collateral_vault.amount;
+
+        // Derive observed price = vault·PRICE_SCALE / supply.
+        // If supply==0 (pre-first-breath), default to peg.
+        let observed_price: u64 = if supply == 0 {
+            UNIT
+        } else {
+            let scaled = (vault_amt as u128).saturating_mul(UNIT as u128) / (supply as u128);
+            scaled.min(u64::MAX as u128) as u64
+        };
+
+        // Direction: if observed > peg, downward force needed (-1);
+        //            if observed < peg, upward force needed (+1)
+        let direction: i8 = if observed_price > UNIT {
+            -1
+        } else if observed_price < UNIT {
+            1
+        } else {
+            0
+        };
+
+        let cpi_ctx = CpiContext::new(
+            ctx.accounts.brain_program.to_account_info(),
+            BrainEvaluate {
+                severity: ctx.accounts.brain_severity.to_account_info(),
+                ladder: ctx.accounts.brain_ladder.to_account_info(),
+                intensity: ctx.accounts.brain_intensity.to_account_info(),
+                active_set: ctx.accounts.brain_active_set.to_account_info(),
+                params: ctx.accounts.brain_params.to_account_info(),
+            },
+        );
+
+        let cpi_result = organism_brain::cpi::evaluate_transaction(
+            cpi_ctx,
+            observed_price,
+            direction,
+            current_slot,
+        );
+
+        let body = &mut ctx.accounts.body_state;
+        let directive = match cpi_result {
+            Ok(()) => match get_return_data() {
+                Some((program_id, data)) if program_id == ctx.accounts.brain_program.key() => {
+                    match DirectiveResponse::try_from_slice(&data) {
+                        Ok(resp) => Directive {
+                            execution_mode: match resp.execution_mode {
+                                0 => ExecutionMode::Execute,
+                                1 => ExecutionMode::Throttle,
+                                2 => ExecutionMode::Route,
+                                _ => ExecutionMode::Halt,
+                            },
+                            fee_adjustment: resp.fee_adjustment,
+                            spread_adjustment: resp.spread_adjustment,
+                            throttle_factor: resp.throttle_factor,
+                            mint_burn_delta: resp.mint_burn_delta,
+                            collateral_ratio_target: resp.collateral_ratio_target,
+                        },
+                        Err(_) => {
+                            emit!(BrainFailure { reason: 1 });
+                            Directive::default()
+                        }
+                    }
+                }
+                _ => {
+                    emit!(BrainFailure { reason: 2 });
+                    Directive::default()
+                }
+            },
+            Err(_) => {
+                emit!(BrainFailure { reason: 3 });
+                Directive::default()
+            }
+        };
+
+        body.current_directive = directive;
+        body.last_price = observed_price;
+        body.last_slot = current_slot;
+        body.throttle_window_start = current_slot;
+        body.throttle_window_remaining = throttle_capacity(&body.current_directive);
+
+        emit!(ObservedHeartbeat {
+            observed_price,
+            vault_amount: vault_amt,
+            supply,
+            slot: current_slot,
+        });
+
+        Ok(())
+    }
+
     /// Internal AMM bootstrap: register the collateral mint and create the
     /// collateral vault (held by mint_authority PDA). Called once.
     pub fn initialize_lp(ctx: Context<InitializeLp>) -> Result<()> {
@@ -875,6 +975,33 @@ pub struct Heartbeat<'info> {
 }
 
 #[derive(Accounts)]
+pub struct HeartbeatObserved<'info> {
+    #[account(seeds = [MINT_SEED], bump)]
+    pub mint: Account<'info, Mint>,
+    #[account(seeds = [COLLATERAL_VAULT_SEED], bump)]
+    pub collateral_vault: Account<'info, TokenAccount>,
+    #[account(mut, seeds = [BODY_STATE_SEED], bump)]
+    pub body_state: Account<'info, BodyState>,
+
+    /// CHECK: brain severity
+    #[account(mut)]
+    pub brain_severity: AccountInfo<'info>,
+    /// CHECK: brain ladder
+    #[account(mut)]
+    pub brain_ladder: AccountInfo<'info>,
+    /// CHECK: brain intensity
+    #[account(mut)]
+    pub brain_intensity: AccountInfo<'info>,
+    /// CHECK: brain active_set
+    #[account(mut)]
+    pub brain_active_set: AccountInfo<'info>,
+    /// CHECK: brain params
+    pub brain_params: AccountInfo<'info>,
+
+    pub brain_program: Program<'info, OrganismBrain>,
+}
+
+#[derive(Accounts)]
 pub struct InitializeLp<'info> {
     pub collateral_mint: Account<'info, Mint>,
     /// CHECK: PDA mint authority for ORG (signs collateral transfers out)
@@ -1022,6 +1149,13 @@ pub struct BrainFailure { pub reason: u8 }
 pub struct BodySealed {}
 #[event]
 pub struct FirstBreathEvent { pub amount: u64 }
+#[event]
+pub struct ObservedHeartbeat {
+    pub observed_price: u64,
+    pub vault_amount: u64,
+    pub supply: u64,
+    pub slot: u64,
+}
 #[event]
 pub struct LpSwapEvent {
     pub direction: u8, // 0 = in (col→ORG), 1 = out (ORG→col)
