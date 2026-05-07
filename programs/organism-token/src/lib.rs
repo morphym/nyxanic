@@ -20,6 +20,8 @@ pub const BODY_STATE_SEED: &[u8] = b"body_state";
 pub const FEE_COLLECTOR_SEED: &[u8] = b"fee_collector";
 pub const POOL_REGISTRY_SEED: &[u8] = b"pool_registry";
 pub const MINT_AUTHORITY_SEED: &[u8] = b"mint_authority";
+pub const LP_STATE_SEED: &[u8] = b"lp_state";
+pub const COLLATERAL_VAULT_SEED: &[u8] = b"collateral_vault";
 
 pub const UNIT: u64 = 1_000_000;
 pub const FEE_DENOMINATOR: u64 = 1_000_000; // fee_adjustment is per-million
@@ -82,6 +84,16 @@ pub struct BodyState {
     pub throttle_window_remaining: u64,
     /// Slot at which the current throttle window started
     pub throttle_window_start: u64,
+}
+
+/// Internal AMM state. Tracks the chosen collateral mint + one-shot seed flag.
+#[account]
+#[derive(InitSpace)]
+pub struct LpState {
+    pub collateral_mint: Pubkey,
+    pub seeded: bool,
+    pub total_swap_in_volume: u64,
+    pub total_swap_out_volume: u64,
 }
 
 #[account]
@@ -434,6 +446,194 @@ pub mod organism_token {
         Ok(())
     }
 
+    /// §6 step 9 — Authority handoff. Deployer surrenders all admin power.
+    /// Nullifies body_state.authority and pool_registry.authority by setting
+    /// them to Pubkey::default(). After this, no signer can satisfy the
+    /// authority checks on apply_directive or register_pool — both are dead.
+    /// Heartbeat (CPI-driven) continues to function. This is irreversible.
+    pub fn seal_body(ctx: Context<SealBody>) -> Result<()> {
+        let body = &mut ctx.accounts.body_state;
+        let registry = &mut ctx.accounts.pool_registry;
+        require_keys_eq!(
+            ctx.accounts.authority.key(),
+            body.authority,
+            BodyError::Unauthorized
+        );
+        body.authority = Pubkey::default();
+        registry.authority = Pubkey::default();
+        emit!(BodySealed {});
+        Ok(())
+    }
+
+    /// Internal AMM bootstrap: register the collateral mint and create the
+    /// collateral vault (held by mint_authority PDA). Called once.
+    pub fn initialize_lp(ctx: Context<InitializeLp>) -> Result<()> {
+        let lp = &mut ctx.accounts.lp_state;
+        lp.collateral_mint = ctx.accounts.collateral_mint.key();
+        lp.seeded = false;
+        lp.total_swap_in_volume = 0;
+        lp.total_swap_out_volume = 0;
+        Ok(())
+    }
+
+    /// §6 step 10 — First Breath. Initial liquidity provider deposits seed
+    /// collateral; an equal amount of ORG is minted to them. Sets the 1:1
+    /// reserve baseline. One-shot: gated by lp_state.seeded.
+    pub fn first_breath(ctx: Context<FirstBreath>, seed_amount: u64) -> Result<()> {
+        require!(!ctx.accounts.lp_state.seeded, BodyError::AlreadySeeded);
+        require!(seed_amount > 0, BodyError::Overflow);
+
+        // Move collateral user → vault
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.user_collateral.to_account_info(),
+                    to: ctx.accounts.collateral_vault.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            seed_amount,
+        )?;
+
+        // Mint matching ORG to user
+        let bump = ctx.bumps.mint_authority;
+        let seeds: &[&[u8]] = &[MINT_AUTHORITY_SEED, &[bump]];
+        let signer = &[seeds];
+        token::mint_to(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                MintTo {
+                    mint: ctx.accounts.mint.to_account_info(),
+                    to: ctx.accounts.user_org.to_account_info(),
+                    authority: ctx.accounts.mint_authority.to_account_info(),
+                },
+                signer,
+            ),
+            seed_amount,
+        )?;
+
+        ctx.accounts.lp_state.seeded = true;
+        emit!(FirstBreathEvent { amount: seed_amount });
+        Ok(())
+    }
+
+    /// LP swap: collateral → ORG. Honors halt/throttle, applies spread + fee
+    /// per current directive. The extracted spread+fee remains in the
+    /// collateral vault as over-collateralization growth (self-sustainability).
+    pub fn lp_swap_in(ctx: Context<LpSwapIn>, collateral_amount: u64) -> Result<()> {
+        let directive = ctx.accounts.body_state.current_directive.clone();
+        check_halt(&directive)?;
+        check_throttle(&mut ctx.accounts.body_state, collateral_amount)?;
+        require!(ctx.accounts.lp_state.seeded, BodyError::NotSeeded);
+
+        // 1:1 base ratio, then spread, then fee
+        let after_spread = apply_spread(collateral_amount, directive.spread_adjustment)?;
+        let fee = compute_fee(after_spread, directive.fee_adjustment)?;
+        let user_gets_org = after_spread.checked_sub(fee).ok_or(BodyError::Overflow)?;
+
+        // Move all collateral into vault
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.user_collateral.to_account_info(),
+                    to: ctx.accounts.collateral_vault.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            collateral_amount,
+        )?;
+
+        // Mint ORG to user
+        let bump = ctx.bumps.mint_authority;
+        let seeds: &[&[u8]] = &[MINT_AUTHORITY_SEED, &[bump]];
+        let signer = &[seeds];
+        token::mint_to(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                MintTo {
+                    mint: ctx.accounts.mint.to_account_info(),
+                    to: ctx.accounts.user_org.to_account_info(),
+                    authority: ctx.accounts.mint_authority.to_account_info(),
+                },
+                signer,
+            ),
+            user_gets_org,
+        )?;
+
+        let lp = &mut ctx.accounts.lp_state;
+        lp.total_swap_in_volume = lp.total_swap_in_volume.saturating_add(collateral_amount);
+
+        emit!(LpSwapEvent {
+            direction: 0, // in: collateral → ORG
+            in_amount: collateral_amount,
+            out_amount: user_gets_org,
+            extracted: collateral_amount.saturating_sub(user_gets_org),
+        });
+        Ok(())
+    }
+
+    /// LP swap: ORG → collateral. Honors halt/throttle, applies spread + fee.
+    /// User burns full org_amount but only receives the post-spread/fee portion
+    /// of collateral. Difference stays in vault.
+    pub fn lp_swap_out(ctx: Context<LpSwapOut>, org_amount: u64) -> Result<()> {
+        let directive = ctx.accounts.body_state.current_directive.clone();
+        check_halt(&directive)?;
+        check_throttle(&mut ctx.accounts.body_state, org_amount)?;
+        require!(ctx.accounts.lp_state.seeded, BodyError::NotSeeded);
+
+        let after_spread = apply_spread(org_amount, directive.spread_adjustment)?;
+        let fee = compute_fee(after_spread, directive.fee_adjustment)?;
+        let user_gets_collateral = after_spread.checked_sub(fee).ok_or(BodyError::Overflow)?;
+
+        require!(
+            ctx.accounts.collateral_vault.amount >= user_gets_collateral,
+            BodyError::InsufficientReserves
+        );
+
+        // Burn full org_amount from user
+        token::burn(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Burn {
+                    mint: ctx.accounts.mint.to_account_info(),
+                    from: ctx.accounts.user_org.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            org_amount,
+        )?;
+
+        // Transfer collateral from vault to user (signed by mint_authority PDA)
+        let bump = ctx.bumps.mint_authority;
+        let seeds: &[&[u8]] = &[MINT_AUTHORITY_SEED, &[bump]];
+        let signer = &[seeds];
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.collateral_vault.to_account_info(),
+                    to: ctx.accounts.user_collateral.to_account_info(),
+                    authority: ctx.accounts.mint_authority.to_account_info(),
+                },
+                signer,
+            ),
+            user_gets_collateral,
+        )?;
+
+        let lp = &mut ctx.accounts.lp_state;
+        lp.total_swap_out_volume = lp.total_swap_out_volume.saturating_add(org_amount);
+
+        emit!(LpSwapEvent {
+            direction: 1, // out: ORG → collateral
+            in_amount: org_amount,
+            out_amount: user_gets_collateral,
+            extracted: org_amount.saturating_sub(user_gets_collateral),
+        });
+        Ok(())
+    }
+
     /// Register a pool address into the registry (admin only).
     /// Used at rung ℓ5 (Liquidity Routing).
     pub fn register_pool(ctx: Context<RegisterPool>, pool: Pubkey) -> Result<()> {
@@ -675,6 +875,121 @@ pub struct Heartbeat<'info> {
 }
 
 #[derive(Accounts)]
+pub struct InitializeLp<'info> {
+    pub collateral_mint: Account<'info, Mint>,
+    /// CHECK: PDA mint authority for ORG (signs collateral transfers out)
+    #[account(seeds = [MINT_AUTHORITY_SEED], bump)]
+    pub mint_authority: AccountInfo<'info>,
+    #[account(
+        init,
+        payer = payer,
+        token::mint = collateral_mint,
+        token::authority = mint_authority,
+        seeds = [COLLATERAL_VAULT_SEED],
+        bump,
+    )]
+    pub collateral_vault: Account<'info, TokenAccount>,
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + LpState::INIT_SPACE,
+        seeds = [LP_STATE_SEED],
+        bump,
+    )]
+    pub lp_state: Account<'info, LpState>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct FirstBreath<'info> {
+    #[account(mut, seeds = [MINT_SEED], bump)]
+    pub mint: Account<'info, Mint>,
+    /// CHECK: PDA mint authority
+    #[account(seeds = [MINT_AUTHORITY_SEED], bump)]
+    pub mint_authority: AccountInfo<'info>,
+    #[account(mut, seeds = [LP_STATE_SEED], bump)]
+    pub lp_state: Account<'info, LpState>,
+    #[account(
+        mut,
+        seeds = [COLLATERAL_VAULT_SEED],
+        bump,
+        constraint = collateral_vault.mint == lp_state.collateral_mint @ BodyError::WrongCollateral,
+    )]
+    pub collateral_vault: Account<'info, TokenAccount>,
+    #[account(mut, constraint = user_collateral.mint == lp_state.collateral_mint @ BodyError::WrongCollateral)]
+    pub user_collateral: Account<'info, TokenAccount>,
+    #[account(mut, constraint = user_org.mint == mint.key() @ BodyError::WrongCollateral)]
+    pub user_org: Account<'info, TokenAccount>,
+    pub user: Signer<'info>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct LpSwapIn<'info> {
+    #[account(mut, seeds = [MINT_SEED], bump)]
+    pub mint: Account<'info, Mint>,
+    /// CHECK: PDA mint authority
+    #[account(seeds = [MINT_AUTHORITY_SEED], bump)]
+    pub mint_authority: AccountInfo<'info>,
+    #[account(mut, seeds = [BODY_STATE_SEED], bump)]
+    pub body_state: Account<'info, BodyState>,
+    #[account(mut, seeds = [LP_STATE_SEED], bump)]
+    pub lp_state: Account<'info, LpState>,
+    #[account(
+        mut,
+        seeds = [COLLATERAL_VAULT_SEED],
+        bump,
+        constraint = collateral_vault.mint == lp_state.collateral_mint @ BodyError::WrongCollateral,
+    )]
+    pub collateral_vault: Account<'info, TokenAccount>,
+    #[account(mut, constraint = user_collateral.mint == lp_state.collateral_mint @ BodyError::WrongCollateral)]
+    pub user_collateral: Account<'info, TokenAccount>,
+    #[account(mut, constraint = user_org.mint == mint.key() @ BodyError::WrongCollateral)]
+    pub user_org: Account<'info, TokenAccount>,
+    pub user: Signer<'info>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct LpSwapOut<'info> {
+    #[account(mut, seeds = [MINT_SEED], bump)]
+    pub mint: Account<'info, Mint>,
+    /// CHECK: PDA mint authority
+    #[account(seeds = [MINT_AUTHORITY_SEED], bump)]
+    pub mint_authority: AccountInfo<'info>,
+    #[account(mut, seeds = [BODY_STATE_SEED], bump)]
+    pub body_state: Account<'info, BodyState>,
+    #[account(mut, seeds = [LP_STATE_SEED], bump)]
+    pub lp_state: Account<'info, LpState>,
+    #[account(
+        mut,
+        seeds = [COLLATERAL_VAULT_SEED],
+        bump,
+        constraint = collateral_vault.mint == lp_state.collateral_mint @ BodyError::WrongCollateral,
+    )]
+    pub collateral_vault: Account<'info, TokenAccount>,
+    #[account(mut, constraint = user_collateral.mint == lp_state.collateral_mint @ BodyError::WrongCollateral)]
+    pub user_collateral: Account<'info, TokenAccount>,
+    #[account(mut, constraint = user_org.mint == mint.key() @ BodyError::WrongCollateral)]
+    pub user_org: Account<'info, TokenAccount>,
+    pub user: Signer<'info>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct SealBody<'info> {
+    #[account(mut, seeds = [BODY_STATE_SEED], bump)]
+    pub body_state: Account<'info, BodyState>,
+    #[account(mut, seeds = [POOL_REGISTRY_SEED], bump)]
+    pub pool_registry: Account<'info, PoolRegistry>,
+    pub authority: Signer<'info>,
+}
+
+#[derive(Accounts)]
 pub struct RegisterPool<'info> {
     #[account(mut, seeds = [POOL_REGISTRY_SEED], bump)]
     pub pool_registry: Account<'info, PoolRegistry>,
@@ -703,6 +1018,17 @@ pub struct HeartbeatEvent {
 }
 #[event]
 pub struct BrainFailure { pub reason: u8 }
+#[event]
+pub struct BodySealed {}
+#[event]
+pub struct FirstBreathEvent { pub amount: u64 }
+#[event]
+pub struct LpSwapEvent {
+    pub direction: u8, // 0 = in (col→ORG), 1 = out (ORG→col)
+    pub in_amount: u64,
+    pub out_amount: u64,
+    pub extracted: u64,
+}
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -720,4 +1046,12 @@ pub enum BodyError {
     RegistryFull,
     #[msg("Arithmetic overflow")]
     Overflow,
+    #[msg("LP already seeded")]
+    AlreadySeeded,
+    #[msg("LP not seeded yet")]
+    NotSeeded,
+    #[msg("Wrong collateral mint")]
+    WrongCollateral,
+    #[msg("Insufficient reserves in collateral vault")]
+    InsufficientReserves,
 }
