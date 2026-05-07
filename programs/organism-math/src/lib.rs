@@ -10,6 +10,7 @@ declare_id!("7j1odNDL4rvPk7KyPf2rk2VNc4RjFVXjG9YHqCgHP5VR");
 pub const SEVERITY_SEED: &[u8] = b"severity";
 pub const LADDER_SEED: &[u8] = b"ladder";
 pub const INTENSITY_SEED: &[u8] = b"intensity";
+pub const ACTIVE_SET_SEED: &[u8] = b"active_set";
 pub const PARAMS_SEED: &[u8] = b"params";
 
 // ---------------------------------------------------------------------------
@@ -40,6 +41,13 @@ pub struct LadderState {
 #[derive(InitSpace)]
 pub struct IntensityState {
     pub values: [u64; NUM_RUNGS],
+}
+
+/// B6 (added §2.9): Active-set state — current ordering of active rungs.
+#[account]
+#[derive(InitSpace)]
+pub struct ActiveSetState {
+    pub order: [u8; NUM_RUNGS],
 }
 
 /// B5: Parameters
@@ -101,6 +109,7 @@ fn to_brain_state(
     sev: &SeverityState,
     lad: &LadderState,
     int: &IntensityState,
+    act: &ActiveSetState,
 ) -> math::BrainState {
     math::BrainState {
         severity: sev.s,
@@ -111,6 +120,7 @@ fn to_brain_state(
         tau: lad.tau,
         intensity: int.values,
         permutations_tried: lad.permutations_tried,
+        active_set: act.order,
     }
 }
 
@@ -119,6 +129,7 @@ fn write_back(
     sev: &mut SeverityState,
     lad: &mut LadderState,
     int: &mut IntensityState,
+    act: &mut ActiveSetState,
 ) {
     sev.s = brain.severity;
     sev.previous_s = brain.prev_severity;
@@ -128,6 +139,7 @@ fn write_back(
     lad.tau = brain.tau;
     lad.permutations_tried = brain.permutations_tried;
     int.values = brain.intensity;
+    act.order = brain.active_set;
 }
 
 fn to_directive_response(d: &math::Directive) -> DirectiveResponse {
@@ -200,6 +212,14 @@ pub mod organism_brain {
         Ok(())
     }
 
+    /// §2.9 init: create the active-set account separately (so existing
+    /// brain-state PDAs on devnet don't need to be wiped/migrated).
+    pub fn initialize_active_set(ctx: Context<InitializeActiveSet>) -> Result<()> {
+        let acc = &mut ctx.accounts.active_set;
+        acc.order = [1, 2, 3, 4, 5, 6, 7, 8];
+        Ok(())
+    }
+
     /// §4.1 — Heartbeat. The single entry point Contract A calls per transaction.
     pub fn evaluate_transaction(
         ctx: Context<EvaluateTransaction>,
@@ -212,6 +232,7 @@ pub mod organism_brain {
             &ctx.accounts.severity,
             &ctx.accounts.ladder,
             &ctx.accounts.intensity,
+            &ctx.accounts.active_set,
         );
 
         let directive = math::evaluate(&mut brain, current_price, direction_hint, current_slot, &params);
@@ -220,7 +241,8 @@ pub mod organism_brain {
         let sev = &mut ctx.accounts.severity;
         let lad = &mut ctx.accounts.ladder;
         let int = &mut ctx.accounts.intensity;
-        write_back(&brain, sev, lad, int);
+        let act = &mut ctx.accounts.active_set;
+        write_back(&brain, sev, lad, int, act);
 
         // Return directive via set_return_data
         let resp = to_directive_response(&directive);
@@ -282,6 +304,21 @@ pub struct InitializeBrain<'info> {
 }
 
 #[derive(Accounts)]
+pub struct InitializeActiveSet<'info> {
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + ActiveSetState::INIT_SPACE,
+        seeds = [ACTIVE_SET_SEED],
+        bump,
+    )]
+    pub active_set: Account<'info, ActiveSetState>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct EvaluateTransaction<'info> {
     #[account(
         mut,
@@ -301,6 +338,12 @@ pub struct EvaluateTransaction<'info> {
         bump,
     )]
     pub intensity: Account<'info, IntensityState>,
+    #[account(
+        mut,
+        seeds = [ACTIVE_SET_SEED],
+        bump,
+    )]
+    pub active_set: Account<'info, ActiveSetState>,
     #[account(
         seeds = [PARAMS_SEED],
         bump,

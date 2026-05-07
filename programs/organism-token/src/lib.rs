@@ -367,6 +367,7 @@ pub mod organism_token {
                 severity: ctx.accounts.brain_severity.to_account_info(),
                 ladder: ctx.accounts.brain_ladder.to_account_info(),
                 intensity: ctx.accounts.brain_intensity.to_account_info(),
+                active_set: ctx.accounts.brain_active_set.to_account_info(),
                 params: ctx.accounts.brain_params.to_account_info(),
             },
         );
@@ -664,6 +665,9 @@ pub struct Heartbeat<'info> {
     /// CHECK: Brain's intensity state — validated by brain
     #[account(mut)]
     pub brain_intensity: AccountInfo<'info>,
+    /// CHECK: Brain's active-set state — validated by brain
+    #[account(mut)]
+    pub brain_active_set: AccountInfo<'info>,
     /// CHECK: Brain's parameter account — validated by brain
     pub brain_params: AccountInfo<'info>,
 
