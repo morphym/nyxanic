@@ -619,8 +619,9 @@ pub mod organism_token {
     }
 
     /// LP swap: collateral → ORG. Honors halt/throttle, applies spread + fee
-    /// per current directive. The extracted spread+fee remains in the
-    /// collateral vault as over-collateralization growth (self-sustainability).
+    /// per current directive. The extracted spread+fee is minted as ORG into
+    /// the fee_collector treasury — used by ℓ6 (rebalance_supply) for active
+    /// supply contraction when the brain demands it.
     pub fn lp_swap_in(ctx: Context<LpSwapIn>, collateral_amount: u64) -> Result<()> {
         let directive = ctx.accounts.body_state.current_directive.clone();
         check_halt(&directive)?;
@@ -631,6 +632,7 @@ pub mod organism_token {
         let after_spread = apply_spread(collateral_amount, directive.spread_adjustment)?;
         let fee = compute_fee(after_spread, directive.fee_adjustment)?;
         let user_gets_org = after_spread.checked_sub(fee).ok_or(BodyError::Overflow)?;
+        let extracted = collateral_amount.checked_sub(user_gets_org).ok_or(BodyError::Overflow)?;
 
         // Move all collateral into vault
         token::transfer(
@@ -662,6 +664,22 @@ pub mod organism_token {
             user_gets_org,
         )?;
 
+        // Mint extracted portion as ORG to fee_collector treasury
+        if extracted > 0 {
+            token::mint_to(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    MintTo {
+                        mint: ctx.accounts.mint.to_account_info(),
+                        to: ctx.accounts.fee_collector.to_account_info(),
+                        authority: ctx.accounts.mint_authority.to_account_info(),
+                    },
+                    signer,
+                ),
+                extracted,
+            )?;
+        }
+
         let lp = &mut ctx.accounts.lp_state;
         lp.total_swap_in_volume = lp.total_swap_in_volume.saturating_add(collateral_amount);
 
@@ -669,7 +687,7 @@ pub mod organism_token {
             direction: 0, // in: collateral → ORG
             in_amount: collateral_amount,
             out_amount: user_gets_org,
-            extracted: collateral_amount.saturating_sub(user_gets_org),
+            extracted,
         });
         Ok(())
     }
@@ -731,6 +749,55 @@ pub mod organism_token {
             out_amount: user_gets_collateral,
             extracted: org_amount.saturating_sub(user_gets_collateral),
         });
+        Ok(())
+    }
+
+    /// §2.6 ℓ6 — Supply correction. Permissionless: anyone can trigger the
+    /// body to apply its current directive's mint_burn_delta. Negative delta
+    /// burns ORG from the fee_collector treasury (autonomous supply
+    /// contraction). Positive delta is a signal only — the body does not
+    /// autonomously mint unbacked ORG (that would dilute collateralization).
+    /// Caller pays only tx fees.
+    pub fn rebalance_supply(ctx: Context<RebalanceSupply>) -> Result<()> {
+        let directive = ctx.accounts.body_state.current_directive.clone();
+        let delta = directive.mint_burn_delta;
+
+        if delta < 0 {
+            // Contract supply: burn from fee_collector
+            let to_burn = (-delta) as u64;
+            let available = ctx.accounts.fee_collector.amount;
+            let actual = to_burn.min(available);
+
+            if actual > 0 {
+                let bump = ctx.bumps.mint_authority;
+                let seeds: &[&[u8]] = &[MINT_AUTHORITY_SEED, &[bump]];
+                let signer = &[seeds];
+                token::burn(
+                    CpiContext::new_with_signer(
+                        ctx.accounts.token_program.to_account_info(),
+                        Burn {
+                            mint: ctx.accounts.mint.to_account_info(),
+                            from: ctx.accounts.fee_collector.to_account_info(),
+                            authority: ctx.accounts.mint_authority.to_account_info(),
+                        },
+                        signer,
+                    ),
+                    actual,
+                )?;
+                emit!(SupplyContracted { burned: actual, requested: to_burn });
+            } else {
+                emit!(SupplyContractedShortfall { available, requested: to_burn });
+            }
+        } else if delta > 0 {
+            // Expansion request — emit signal only. Off-chain bots / users
+            // can choose to swap_in (which mints backed ORG) in response.
+            emit!(SupplyExpansionRequested { amount: delta as u64 });
+        }
+
+        // Mark applied: zero out delta so repeat calls don't re-apply.
+        let body = &mut ctx.accounts.body_state;
+        body.current_directive.mint_burn_delta = 0;
+
         Ok(())
     }
 
@@ -1077,6 +1144,8 @@ pub struct LpSwapIn<'info> {
     pub user_collateral: Account<'info, TokenAccount>,
     #[account(mut, constraint = user_org.mint == mint.key() @ BodyError::WrongCollateral)]
     pub user_org: Account<'info, TokenAccount>,
+    #[account(mut, seeds = [FEE_COLLECTOR_SEED], bump)]
+    pub fee_collector: Account<'info, TokenAccount>,
     pub user: Signer<'info>,
     pub token_program: Program<'info, Token>,
 }
@@ -1104,6 +1173,20 @@ pub struct LpSwapOut<'info> {
     #[account(mut, constraint = user_org.mint == mint.key() @ BodyError::WrongCollateral)]
     pub user_org: Account<'info, TokenAccount>,
     pub user: Signer<'info>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct RebalanceSupply<'info> {
+    #[account(mut, seeds = [MINT_SEED], bump)]
+    pub mint: Account<'info, Mint>,
+    /// CHECK: PDA mint authority
+    #[account(seeds = [MINT_AUTHORITY_SEED], bump)]
+    pub mint_authority: AccountInfo<'info>,
+    #[account(mut, seeds = [BODY_STATE_SEED], bump)]
+    pub body_state: Account<'info, BodyState>,
+    #[account(mut, seeds = [FEE_COLLECTOR_SEED], bump)]
+    pub fee_collector: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
 }
 
@@ -1149,6 +1232,12 @@ pub struct BrainFailure { pub reason: u8 }
 pub struct BodySealed {}
 #[event]
 pub struct FirstBreathEvent { pub amount: u64 }
+#[event]
+pub struct SupplyContracted { pub burned: u64, pub requested: u64 }
+#[event]
+pub struct SupplyContractedShortfall { pub available: u64, pub requested: u64 }
+#[event]
+pub struct SupplyExpansionRequested { pub amount: u64 }
 #[event]
 pub struct ObservedHeartbeat {
     pub observed_price: u64,
