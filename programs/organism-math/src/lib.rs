@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use organism_math::{self as math, NUM_RUNGS};
 
-declare_id!("7j1odNDL4rvPk7KyPf2rk2VNc4RjFVXjG9YHqCgHP5VR");
+declare_id!("AFQ8VKgobymzFYCv4NpcSZRpjVyjW9o1uYusRsrgdcqk");
 
 // ---------------------------------------------------------------------------
 // Seeds

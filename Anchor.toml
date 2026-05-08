@@ -6,12 +6,14 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-organism_brain = "7j1odNDL4rvPk7KyPf2rk2VNc4RjFVXjG9YHqCgHP5VR"
-organism_token = "4x2VEu8TGdiJdFqBEdnXAG2EvZPn5m27AoDThbtmLiv5"
+organism_brain = "AFQ8VKgobymzFYCv4NpcSZRpjVyjW9o1uYusRsrgdcqk"
+organism_token = "fvmZ3pBDXY9H3a4ViK5u9e3kPXCR9abpADqA3N9LcVb"
+nyxanic_test_token = "CwgFaQX7APeKvLGiJAxLUGCReooTeM3YzzocQ6bvNYow"
 
 [programs.devnet]
-organism_brain = "7j1odNDL4rvPk7KyPf2rk2VNc4RjFVXjG9YHqCgHP5VR"
-organism_token = "4x2VEu8TGdiJdFqBEdnXAG2EvZPn5m27AoDThbtmLiv5"
+organism_brain = "AFQ8VKgobymzFYCv4NpcSZRpjVyjW9o1uYusRsrgdcqk"
+organism_token = "fvmZ3pBDXY9H3a4ViK5u9e3kPXCR9abpADqA3N9LcVb"
+nyxanic_test_token = "CwgFaQX7APeKvLGiJAxLUGCReooTeM3YzzocQ6bvNYow"
 
 [registry]
 url = "https://api.apr.dev"
@@ -32,3 +34,4 @@ lp = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/lp_trade.ts"
 observed = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/observed_heartbeat.ts"
 rebalance = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/rebalance.ts"
 collat = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/collateral_target.ts"
+fullbirth = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/full_birth.ts"
