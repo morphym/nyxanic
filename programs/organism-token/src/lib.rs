@@ -634,6 +634,22 @@ pub mod organism_token {
         let user_gets_org = after_spread.checked_sub(fee).ok_or(BodyError::Overflow)?;
         let extracted = collateral_amount.checked_sub(user_gets_org).ok_or(BodyError::Overflow)?;
 
+        // §2.6 ℓ7 — collateral ratio enforcement.
+        // If the brain demands a target backing ratio, refuse swap_ins that
+        // would dilute below it. Both vault and supply grow by collateral_amount
+        // (since extracted is also minted as ORG to fee_collector), so post-swap
+        // ratio = (vault + amt) * UNIT / (supply + amt).
+        if directive.collateral_ratio_target > 0 {
+            let new_vault = ctx.accounts.collateral_vault.amount
+                .checked_add(collateral_amount).ok_or(BodyError::Overflow)?;
+            let new_supply = ctx.accounts.mint.supply
+                .checked_add(collateral_amount).ok_or(BodyError::Overflow)?;
+            require!(new_supply > 0, BodyError::Overflow);
+            let post_ratio = (new_vault as u128).saturating_mul(UNIT as u128) / (new_supply as u128);
+            let target = directive.collateral_ratio_target as u128;
+            require!(post_ratio >= target, BodyError::InsufficientCollateralRatio);
+        }
+
         // Move all collateral into vault
         token::transfer(
             CpiContext::new(
@@ -1277,4 +1293,6 @@ pub enum BodyError {
     WrongCollateral,
     #[msg("Insufficient reserves in collateral vault")]
     InsufficientReserves,
+    #[msg("swap_in would push ratio below brain-demanded target (ℓ7)")]
+    InsufficientCollateralRatio,
 }
