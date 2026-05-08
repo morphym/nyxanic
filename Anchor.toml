@@ -35,3 +35,6 @@ observed = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/observed_heartbeat.
 rebalance = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/rebalance.ts"
 collat = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/collateral_target.ts"
 fullbirth = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/full_birth.ts"
+ntt = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/ntt_quota.ts"
+random = "npx ts-mocha -p ./tsconfig.json -t 3600000 tests/random.ts"
+terminal = "npx ts-node --transpile-only scripts/terminal.ts"
