@@ -139,7 +139,11 @@ function render(s: DashboardState) {
   console.log(`  ${COLOR.bold}mode:${COLOR.reset}        ${modeColor(s.mode)}${s.mode.toUpperCase()}${COLOR.reset}`);
   console.log(`  ${COLOR.dim}fee adj:${COLOR.reset}     ${fmtPct(s.fee)}`);
   console.log(`  ${COLOR.dim}spread:${COLOR.reset}      ${fmtPct(s.spread)}`);
-  console.log(`  ${COLOR.dim}throttle:${COLOR.reset}    ${(s.throttle / 100).toFixed(2)}%`);
+  const throttleReduction = 100 - s.throttle / 100;
+  const throttleStr = throttleReduction <= 0
+    ? `${COLOR.green}OFF${COLOR.reset}`
+    : `${COLOR.yellow}${throttleReduction.toFixed(2)}% restriction${COLOR.reset}`;
+  console.log(`  ${COLOR.dim}throttle:${COLOR.reset}    ${throttleStr}`);
   if (s.collatTarget > 0) {
     console.log(`  ${COLOR.dim}collat target:${COLOR.reset} ${(s.collatTarget / UNIT).toFixed(4)}`);
   }
