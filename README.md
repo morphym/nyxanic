@@ -51,11 +51,14 @@ For full mathematics specification, derivation, and the complete architecture, I
 
 **How (Architecture at glance)**
 
+
+<img width="3450" height="2358" alt="Untitled-2026-05-10-0347" src="https://github.com/user-attachments/assets/6f3e6086-f479-4749-b510-6c2e5b76635c" />
+
+</br>
+
 **5.1 The Split**
 
 Contract A holds what is. Contract B holds what to do about it.
-
-<img width="3450" height="2358" alt="Untitled-2026-05-10-0347" src="https://github.com/user-attachments/assets/6f3e6086-f479-4749-b510-6c2e5b76635c" />
 
 **5.2 Loop**
 
@@ -140,6 +143,7 @@ anchor test --skip-build
 
 <img width="1730" height="521" alt="Screenshot" src="https://www.pawit.co/some-data/A55E03E2-CA7E-4848-B267-706BD473A128_1_201_a.jpeg" />
 
+</br>
 
 The heartbeat consumes essentially flat compute across all severity levels. </br>
 Pure mathematics — Hill function, ladder transition, intensity update..— matches the original estimate of $~5,000 CU$. </br>
@@ -155,6 +159,8 @@ Cost variation remains under 1% between full rest and catastrophic depeg. A comp
 This servity measurement was captured on the chain, see section 7.1 test code, to produce again on the chain;
 
 <img width="1554" height="648" alt="Screenshot" src="https://github.com/user-attachments/assets/e4def253-00bc-482d-b486-03d5049b8776" />
+
+</br>
 
 Servity is considered reasonable, and also most other stablecoin actually orbit arround 1 to 0.999 price for brief second.
 
