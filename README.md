@@ -23,7 +23,10 @@ https://github.com/user-attachments/assets/d9c29814-6a0f-4cc5-8a03-fd6d132dfe85
 
 **3.2 Hands On**
 
-<
+
+
+https://github.com/user-attachments/assets/6964e360-e4a1-4652-afa4-8a66566b31d9
+
 
 
 **3.3 Run It Yourself**
@@ -151,11 +154,11 @@ Cost variation remains under 1% between full rest and catastrophic depeg. A comp
 
 This servity measurement was captured on the chain, see section 7.1 test code, to produce again on the chain;
 
-[immage]
+<img width="1554" height="648" alt="Screenshot" src="https://github.com/user-attachments/assets/e4def253-00bc-482d-b486-03d5049b8776" />
 
 Servity is considered reasonable, and also most other stablecoin actually orbit arround 1 to 0.999 price for brief second.
 
-yet for this organism, even servity of 0.995 is considered 0.5 medium servity.
+For this organism, even servity of 0.995 is considered 0.5 medium servity.
 
 **7.4 Implication**
 
