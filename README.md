@@ -52,6 +52,8 @@ For full mathematics specification, derivation, and the complete architecture, I
 
 Contract A holds what is. Contract B holds what to do about it.
 
+<img width="3450" height="2358" alt="Untitled-2026-05-10-0347" src="https://github.com/user-attachments/assets/6f3e6086-f479-4749-b510-6c2e5b76635c" />
+
 **5.2 Loop**
 
 Every transaction invokes the Brain via CPI, atomically. <br/>
