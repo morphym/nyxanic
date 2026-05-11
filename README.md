@@ -45,14 +45,15 @@ The organism does not sleep. It waits.
 
 For full mathematics specification, derivation, and the complete architecture, It;s recomended to read the whitepaper
 
-[pawit.co/whitepaper/nyxanic.pdf](https://pawit.co/whitepaper/nyxanic.pdf)
+[pawit.co/whitepapers/nyxanic.pdf](https://pawit.co/whitepapers/nyxanic.pdf)
 
 ---
 
 **How (Architecture at glance)**
 
 
-<img width="3450" height="2358" alt="Untitled-2026-05-10-0347" src="https://github.com/user-attachments/assets/6f3e6086-f479-4749-b510-6c2e5b76635c" />
+<img width="3151" height="2392" alt="Untitled-2026-05-10-0347-3" src="https://github.com/user-attachments/assets/39dedfdf-bf7c-4c44-821b-6fdd8c70744f" />
+
 
 </br>
 
@@ -92,7 +93,7 @@ The severity function maps price deviation to a bounded activation signal. The l
 
 The mathematics is closed-form, deterministic, and domain-independent. 
 
-For complete definitions, derivations, parameter choices, and measured behavior, see the [whitepaper](pawit.co/whitepaper/nyxanic.pdf)
+For complete definitions, derivations, parameter choices, and measured behavior, see the [whitepaper](pawit.co/whitepapers/nyxanic.pdf)
 
 **6. Properties**
 
