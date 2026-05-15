@@ -130,9 +130,9 @@ visit [/test](/test/)
 
 `cu_measure.ts` directly instruments compute units consumed per heartbeat scenario. The remaining tests exercise severity, hysteresis, ladder transitions, intensity dynamics, permutations, supply correction, collateral ratio enforcement, and authority handoff.. all verifiable on-chain.
 
-The first complete token deployed during creation, not a test token:
+The **first complete token deployed during creation, not a test token**:
 
-4x2VEu8TGdiJdFqBEdnXAG2EvZPn5m27AoDThbtmLiv5
+[4x2VEu8TGdiJdFqBEdnXAG2EvZPn5m27AoDThbtmLiv5](https://explorer.solana.com/address/4x2VEu8TGdiJdFqBEdnXAG2EvZPn5m27AoDThbtmLiv5?cluster=devnet)
 
 Its transaction history on devnet records the full birth sequence, heartbeat evaluations, LP trades, and ladder escalations. Verify by inspecting the chain directly, or run the suite yourself:
 
