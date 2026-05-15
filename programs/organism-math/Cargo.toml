@@ -21,7 +21,7 @@ custom-panic = []
 
 [dependencies]
 anchor-lang = "0.32.1"
-organism-math = { path = "./organism" }
+organism-math = { path = "../../organism" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
